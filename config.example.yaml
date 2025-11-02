@@ -1,0 +1,24 @@
+# ER707 WAN Monitor Configuration Example
+# 
+# Copy this file to config.yaml and update with your actual values.
+# DO NOT commit config.yaml to version control (it contains credentials).
+
+omada:
+  controller_url: "https://192.168.1.10:8043"
+  username: "admin"
+  password: "your_password_here"
+  site_name: "Default"
+  verify_ssl: false
+
+device:
+  mac_address: "00-00-00-00-00-00"
+  wan_port_id: 0
+
+monitoring:
+  check_interval_seconds: 180
+  reconnect_wait_seconds: 5
+  max_reconnect_attempts: 3
+
+logging:
+  level: "INFO"
+  file: "logs/wan_monitor.log"

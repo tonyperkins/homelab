@@ -1,0 +1,43 @@
+# Systemd service file for ER707 WAN Monitor
+# 
+# Installation:
+# 1. Edit this file and update paths and user
+# 2. Copy to /etc/systemd/system/wan-monitor.service
+# 3. Run: sudo systemctl daemon-reload
+# 4. Run: sudo systemctl enable wan-monitor
+# 5. Run: sudo systemctl start wan-monitor
+# 6. Check status: sudo systemctl status wan-monitor
+# 7. View logs: sudo journalctl -u wan-monitor -f
+
+[Unit]
+Description=ER707 WAN IP Monitor and Auto-Remediation Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Change this to your user
+User=your_username
+
+# Change this to the directory containing er707_wan_monitor.py
+WorkingDirectory=/path/to/homelab
+
+# Change this to your Python path and script path
+ExecStart=/usr/bin/python3 /path/to/homelab/er707_wan_monitor.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening (optional)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wan-monitor
+
+[Install]
+WantedBy=multi-user.target
