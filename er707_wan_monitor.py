@@ -44,6 +44,7 @@ class OmadaController:
         self.session = requests.Session()
         self.token = None
         self.controller_id = None
+        self.omadac_id = None  # For software controllers
         self.site_id = None
         
         # Disable SSL warnings if verification is disabled
@@ -74,10 +75,19 @@ class OmadaController:
             if response.status_code == 200:
                 data = response.json()
                 if data.get('errorCode') == 0:
-                    self.token = data.get('result', {}).get('token')
-                    logging.info("Successfully authenticated with Omada Controller")
+                    result = data.get('result', {})
+                    self.token = result.get('token')
+                    self.omadac_id = result.get('omadacId', '')  # Software controller ID
                     
-                    # Get controller ID
+                    # Set CSRF token header
+                    if self.token:
+                        self.session.headers.update({'Csrf-Token': self.token})
+                    
+                    logging.info("Successfully authenticated with Omada Controller")
+                    if self.omadac_id:
+                        logging.info(f"Software Omada Controller detected (ID: {self.omadac_id[:20]}...)")
+                    
+                    # Get controller and site info
                     self._get_controller_info()
                     return True
             
@@ -91,35 +101,87 @@ class OmadaController:
     def _get_controller_info(self) -> None:
         """Retrieve controller and site information."""
         try:
-            # Get controller ID
+            # Try to get controller ID (hardware controllers only)
             info_url = f"{self.base_url}/api/v2/controllers"
             response = self.session.get(info_url, verify=self.verify_ssl, timeout=10)
             
             if response.status_code == 200:
-                data = response.json()
-                if data.get('errorCode') == 0:
-                    controllers = data.get('result', [])
-                    if controllers:
-                        self.controller_id = controllers[0].get('omadacId')
-                        logging.info(f"Controller ID: {self.controller_id}")
-            
-            # Get site ID
-            if self.controller_id:
-                sites_url = f"{self.base_url}/{self.controller_id}/api/v2/sites"
-                response = self.session.get(sites_url, verify=self.verify_ssl, timeout=10)
-                
-                if response.status_code == 200:
+                try:
                     data = response.json()
                     if data.get('errorCode') == 0:
-                        sites = data.get('result', {}).get('data', [])
-                        for site in sites:
-                            if site.get('name') == self.site_name:
-                                self.site_id = site.get('id')
-                                logging.info(f"Site ID: {self.site_id}")
-                                break
+                        controllers = data.get('result', [])
+                        if controllers:
+                            self.controller_id = controllers[0].get('omadacId')
+                            logging.info(f"Hardware Controller ID: {self.controller_id}")
+                    else:
+                        # Software controller - endpoint not supported
+                        logging.debug("Software controller detected (controllers endpoint not supported)")
+                except:
+                    pass
+            
+            # Get site ID - use omadac_id for software controllers, controller_id for hardware
+            effective_id = self.omadac_id or self.controller_id
+            
+            if effective_id:
+                sites_url = f"{self.base_url}/{effective_id}/api/v2/sites?currentPage=1&currentPageSize=1000"
+            else:
+                sites_url = f"{self.base_url}/api/v2/sites"
+            
+            response = self.session.get(sites_url, verify=self.verify_ssl, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('errorCode') == 0:
+                    sites = data.get('result', {}).get('data', [])
+                    for site in sites:
+                        if site.get('name') == self.site_name:
+                            self.site_id = site.get('id')
+                            logging.info(f"Site '{self.site_name}' ID: {self.site_id}")
+                            break
+                    
+                    if not self.site_id:
+                        logging.warning(f"Site '{self.site_name}' not found. Available sites: {[s.get('name') for s in sites]}")
         
         except Exception as e:
             logging.error(f"Error getting controller info: {e}")
+    
+    def get_port_status(self, device_mac: str, port_id: int = 0) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed port status including IP address.
+        
+        Args:
+            device_mac: MAC address of the ER707 device
+            port_id: Port ID to query
+            
+        Returns:
+            Dictionary with port status or None if failed
+        """
+        try:
+            if not self.site_id:
+                logging.error("Site ID not available")
+                return None
+            
+            effective_id = self.omadac_id or self.controller_id
+            
+            if not effective_id:
+                logging.error("No controller ID available")
+                return None
+            
+            # Get port details
+            port_url = f"{self.base_url}/{effective_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}/ports/{port_id}"
+            response = self.session.get(port_url, verify=self.verify_ssl, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('errorCode') == 0:
+                    return data.get('result', {})
+            
+            logging.debug(f"Failed to get port status: {response.status_code}")
+            return None
+            
+        except Exception as e:
+            logging.error(f"Exception getting port status: {e}")
+            return None
     
     def get_wan_status(self, device_mac: str) -> Optional[Dict[str, Any]]:
         """
@@ -132,12 +194,19 @@ class OmadaController:
             Dictionary with WAN status information or None if failed
         """
         try:
-            if not self.controller_id or not self.site_id:
-                logging.error("Controller or Site ID not available")
+            if not self.site_id:
+                logging.error("Site ID not available")
+                return None
+            
+            # Use omadac_id for software controllers, controller_id for hardware
+            effective_id = self.omadac_id or self.controller_id
+            
+            if not effective_id:
+                logging.error("No controller ID available")
                 return None
             
             # Get device status
-            device_url = f"{self.base_url}/{self.controller_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}"
+            device_url = f"{self.base_url}/{effective_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}"
             response = self.session.get(device_url, verify=self.verify_ssl, timeout=10)
             
             if response.status_code == 200:
@@ -164,12 +233,19 @@ class OmadaController:
             bool: True if successful, False otherwise
         """
         try:
-            if not self.controller_id or not self.site_id:
-                logging.error("Controller or Site ID not available")
+            if not self.site_id:
+                logging.error("Site ID not available")
+                return False
+            
+            # Use omadac_id for software controllers, controller_id for hardware
+            effective_id = self.omadac_id or self.controller_id
+            
+            if not effective_id:
+                logging.error("No controller ID available")
                 return False
             
             # Disable WAN port
-            port_url = f"{self.base_url}/{self.controller_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}/ports/{port_id}"
+            port_url = f"{self.base_url}/{effective_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}/ports/{port_id}"
             payload = {
                 "enable": False
             }
@@ -206,12 +282,19 @@ class OmadaController:
             bool: True if successful, False otherwise
         """
         try:
-            if not self.controller_id or not self.site_id:
-                logging.error("Controller or Site ID not available")
+            if not self.site_id:
+                logging.error("Site ID not available")
+                return False
+            
+            # Use omadac_id for software controllers, controller_id for hardware
+            effective_id = self.omadac_id or self.controller_id
+            
+            if not effective_id:
+                logging.error("No controller ID available")
                 return False
             
             # Enable WAN port
-            port_url = f"{self.base_url}/{self.controller_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}/ports/{port_id}"
+            port_url = f"{self.base_url}/{effective_id}/api/v2/sites/{self.site_id}/gateways/{device_mac}/ports/{port_id}"
             payload = {
                 "enable": True
             }
@@ -392,10 +475,30 @@ class WANMonitor:
             WAN IP address string or None if not found
         """
         try:
-            # Try common paths in API response
-            # Note: Actual path may vary based on Omada Controller version
+            # Check portStats array (ER707 structure)
+            port_stats = device_status.get('portStats', [])
+            if port_stats:
+                # Look for WAN ports (type 3 = WAN)
+                for port in port_stats:
+                    port_type = port.get('type')
+                    port_num = port.get('port')
+                    
+                    # Type 3 = WAN port, and match our configured WAN port ID
+                    if port_type == 3 and port_num == (self.wan_port_id + 1):  # Port IDs are 1-indexed in portStats
+                        ip = port.get('ip')
+                        if ip and ip != "0.0.0.0":
+                            logging.debug(f"Found WAN IP in portStats[{port_num}]: {ip}")
+                            return ip
+                
+                # Fallback: any WAN port (type 3)
+                for port in port_stats:
+                    if port.get('type') == 3:
+                        ip = port.get('ip')
+                        if ip and ip != "0.0.0.0":
+                            logging.debug(f"Found WAN IP in portStats (any WAN): {ip}")
+                            return ip
             
-            # Check WAN interface status
+            # Check WAN interface status (older format)
             wan_info = device_status.get('wan', {})
             if isinstance(wan_info, dict):
                 ip = wan_info.get('ipAddr') or wan_info.get('ip') or wan_info.get('ipv4')
@@ -410,7 +513,7 @@ class WANMonitor:
                 if ip:
                     return ip
             
-            # Check ports array
+            # Check ports array (different structure)
             ports = device_status.get('ports', [])
             for port in ports:
                 if port.get('type') == 'wan' or port.get('name', '').lower().startswith('wan'):
@@ -419,7 +522,7 @@ class WANMonitor:
                         return ip
             
             logging.warning("Could not extract WAN IP from device status")
-            logging.debug(f"Device status structure: {json.dumps(device_status, indent=2)}")
+            logging.debug(f"Device status keys: {list(device_status.keys())}")
             return None
             
         except Exception as e:
@@ -433,6 +536,27 @@ class WANMonitor:
         Returns:
             Current WAN IP or None if check failed
         """
+        # Try to get port status first (more detailed)
+        port_status = self.controller.get_port_status(self.device_mac, self.wan_port_id)
+        
+        if port_status:
+            logging.debug(f"Port status received: {json.dumps(port_status, indent=2)[:500]}")
+            # Extract IP from port status - try multiple possible field names
+            wan_ip = (port_status.get('ipv4') or 
+                     port_status.get('ip') or 
+                     port_status.get('ipAddr') or
+                     port_status.get('wan', {}).get('ipv4') or
+                     port_status.get('wan', {}).get('ip'))
+            
+            if wan_ip and IPValidator.is_valid_ip(wan_ip):
+                logging.debug(f"WAN IP found in port status: {wan_ip}")
+                return wan_ip
+            else:
+                logging.debug(f"No valid IP found in port status. Keys available: {list(port_status.keys())}")
+        else:
+            logging.debug("Port status query returned None")
+        
+        # Fallback to device status
         device_status = self.controller.get_wan_status(self.device_mac)
         
         if not device_status:

@@ -86,10 +86,23 @@ def test_controller_connection(config):
         if response.status_code == 200:
             data = response.json()
             if data.get('errorCode') == 0:
-                token = data.get('result', {}).get('token')
+                result = data.get('result', {})
+                token = result.get('token')
+                omadac_id = result.get('omadacId', '')
+                
                 print(f"   ✅ Authentication successful")
                 print(f"   🔑 Token received: {token[:20]}..." if token else "   ⚠️  No token in response")
-                return session, verify_ssl
+                if omadac_id:
+                    print(f"   🆔 Omada ID: {omadac_id}")
+                print(f"   🍪 Cookies set: {len(session.cookies)} cookie(s)")
+                for cookie in session.cookies:
+                    print(f"      - {cookie.name}: {cookie.value[:20]}...")
+                
+                # Set token in session headers for subsequent requests
+                if token:
+                    session.headers.update({'Csrf-Token': token})
+                
+                return session, verify_ssl, token, omadac_id
             else:
                 print(f"   ❌ Login failed: {data.get('msg', 'Unknown error')}")
                 print("   💡 Check username and password")
@@ -123,66 +136,145 @@ def test_device_access(session, verify_ssl, config):
         info_url = f"{base_url}/api/v2/controllers"
         response = session.get(info_url, verify=verify_ssl, timeout=10)
         
+        print(f"   🔍 Debug - Status Code: {response.status_code}")
+        print(f"   🔍 Debug - Response Length: {len(response.text)} bytes")
+        
+        controller_id = ""  # Default for software controllers
+        
         if response.status_code == 200:
-            data = response.json()
-            if data.get('errorCode') == 0:
-                controllers = data.get('result', [])
-                if controllers:
-                    controller_id = controllers[0].get('omadacId')
-                    print(f"   ✅ Controller ID: {controller_id}")
+            try:
+                data = response.json()
+                
+                # Check for error indicating unsupported endpoint (software controller)
+                if data.get('errorCode') != 0:
+                    error_msg = data.get('msg', '')
+                    if 'Unsupported request path' in error_msg or 'not found' in error_msg.lower():
+                        print(f"   ⚠️  Endpoint not supported: {error_msg}")
+                        print("   💡 This is a Software Omada Controller")
+                        print(f"   ✅ Using software controller mode (no controller ID needed)")
+                    else:
+                        print(f"   ❌ Error: {error_msg}")
+                        return False
                 else:
-                    print("   ❌ No controllers found")
-                    return False
-            else:
-                print(f"   ❌ Error: {data.get('msg')}")
-                return False
+                    # Hardware controller - get controller ID
+                    controllers = data.get('result', [])
+                    if controllers:
+                        controller_id = controllers[0].get('omadacId')
+                        print(f"   ✅ Controller ID: {controller_id}")
+                        print("   💡 This is a Hardware Omada Controller")
+                    else:
+                        print("   ⚠️  No controllers found, using software controller mode")
+            except:
+                # HTML or unparseable response - software controller
+                print("   ⚠️  Could not parse response")
+                print(f"   ✅ Using software controller mode")
         else:
-            print(f"   ❌ Failed to get controller info: HTTP {response.status_code}")
-            return False
+            print(f"   ⚠️  HTTP {response.status_code} - using software controller mode")
     except Exception as e:
-        print(f"   ❌ Error: {e}")
-        return False
+        print(f"   ⚠️  Error checking controller type: {e}")
+        print(f"   ✅ Assuming software controller mode")
+        controller_id = ""
     
     # Get site ID
     print("\n2️⃣  Getting site information...")
-    try:
-        sites_url = f"{base_url}/{controller_id}/api/v2/sites"
-        response = session.get(sites_url, verify=verify_ssl, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('errorCode') == 0:
-                sites = data.get('result', {}).get('data', [])
-                site_id = None
-                
-                print(f"   📋 Available sites:")
-                for site in sites:
-                    site_name_found = site.get('name')
-                    site_id_found = site.get('id')
-                    print(f"      - {site_name_found} (ID: {site_id_found})")
-                    if site_name_found == site_name:
-                        site_id = site_id_found
-                
-                if site_id:
-                    print(f"   ✅ Site '{site_name}' found: {site_id}")
-                else:
-                    print(f"   ❌ Site '{site_name}' not found")
-                    print("   💡 Update site_name in config.yaml to match one of the above")
-                    return False
+    
+    # Check if we have omadac_id from login
+    omadac_id_from_login = config.get('_omadac_id', '')
+    
+    # Try getting current user info which might include site info
+    if omadac_id_from_login:
+        try:
+            user_url = f"{base_url}/{omadac_id_from_login}/api/v2/users/current"
+            print(f"   🔍 Trying to get current user info: {user_url}")
+            user_response = session.get(user_url, verify=verify_ssl, timeout=10)
+            if user_response.status_code == 200:
+                user_data = user_response.json()
+                if user_data.get('errorCode') == 0:
+                    print(f"   ℹ️  User info retrieved")
+                    # Check if privilege includes site info
+                    privilege = user_data.get('result', {}).get('privilege', {})
+                    if privilege:
+                        print(f"   🔍 Privilege data found")
+        except:
+            pass
+    
+    # Try multiple API endpoints (v2, v1, alternative paths)
+    sites_endpoints = [
+        f"{base_url}/{omadac_id_from_login}/api/v2/sites?currentPage=1&currentPageSize=1000" if omadac_id_from_login else None,
+        f"{base_url}/{omadac_id_from_login}/api/v2/sites" if omadac_id_from_login else None,
+        f"{base_url}/api/v2/sites",
+        f"{base_url}/api/sites",
+        f"{base_url}/manage/api/v2/sites",
+        f"{base_url}/manage/sites",
+        f"{base_url}/{controller_id}/api/v2/sites" if controller_id else None,
+    ]
+    
+    sites_endpoints = [e for e in sites_endpoints if e]  # Remove None values
+    
+    site_id = None
+    sites_data = None
+    
+    for sites_url in sites_endpoints:
+        try:
+            print(f"   🔍 Trying: {sites_url}")
+            response = session.get(sites_url, verify=verify_ssl, timeout=10)
+            
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    if data.get('errorCode') == 0:
+                        print(f"   ✅ Found working endpoint!")
+                        sites_data = data
+                        break
+                    else:
+                        print(f"   ⚠️  Error: {data.get('msg', 'Unknown')}")
+                except Exception as parse_err:
+                    print(f"   ⚠️  Could not parse response: {parse_err}")
+                    print(f"   🔍 Response preview: {response.text[:150]}")
             else:
-                print(f"   ❌ Error: {data.get('msg')}")
-                return False
+                print(f"   ⚠️  HTTP {response.status_code}")
+        except Exception as e:
+            print(f"   ⚠️  Error: {e}")
+    
+    if not sites_data:
+        print("   ❌ Could not find working sites endpoint")
+        print("   💡 Your Omada Controller may use a different API version")
+        return False
+    
+    try:
+        sites = sites_data.get('result', {}).get('data', [])
+        
+        print(f"   📋 Available sites:")
+        for site in sites:
+            site_name_found = site.get('name')
+            site_id_found = site.get('id')
+            print(f"      - {site_name_found} (ID: {site_id_found})")
+            if site_name_found == site_name:
+                site_id = site_id_found
+        
+        if site_id:
+            print(f"   ✅ Site '{site_name}' found: {site_id}")
         else:
-            print(f"   ❌ Failed to get sites: HTTP {response.status_code}")
+            print(f"   ❌ Site '{site_name}' not found")
+            print("   💡 Update site_name in config.yaml to match one of the above")
             return False
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"   ❌ Error parsing sites: {e}")
         return False
     
     # Get device status
     print("\n3️⃣  Getting device status...")
     try:
-        device_url = f"{base_url}/{controller_id}/api/v2/sites/{site_id}/gateways/{device_mac}"
+        # Handle both hardware and software controllers
+        # Use omadac_id from login if available, otherwise use controller_id
+        if omadac_id_from_login:
+            device_url = f"{base_url}/{omadac_id_from_login}/api/v2/sites/{site_id}/gateways/{device_mac}"
+        elif controller_id:
+            device_url = f"{base_url}/{controller_id}/api/v2/sites/{site_id}/gateways/{device_mac}"
+        else:
+            device_url = f"{base_url}/api/v2/sites/{site_id}/gateways/{device_mac}"
+        
+        print(f"   🔍 Debug - Device URL: {device_url}")
         response = session.get(device_url, verify=verify_ssl, timeout=10)
         
         if response.status_code == 200:
@@ -280,7 +372,10 @@ def main():
         print("="*60)
         sys.exit(1)
     
-    session, verify_ssl = result
+    session, verify_ssl, token, omadac_id = result
+    
+    # Store omadac_id in config for use in device access
+    config['_omadac_id'] = omadac_id
     
     # Test device access
     if not test_device_access(session, verify_ssl, config):

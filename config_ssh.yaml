@@ -1,0 +1,40 @@
+# ER707 WAN Monitor Configuration (SSH Mode - No Omada Controller)
+#
+# This configuration is for standalone ER707 devices accessed via SSH
+
+# ER707 Device Settings
+er707:
+  # ER707 IP address or hostname
+  host: "192.168.1.1"
+  
+  # SSH credentials
+  username: "admin"
+  password: "your_password_here"
+  
+  # SSH port (default: 22)
+  ssh_port: 22
+  
+  # WAN interface name
+  # wan1 = WAN port 1, wan2 = WAN port 2, etc.
+  wan_interface: "wan1"
+
+# Monitoring Behavior
+monitoring:
+  # How often to check WAN IP (in seconds)
+  # Recommended: 60-300 seconds (1-5 minutes)
+  check_interval_seconds: 180
+  
+  # How long to wait between interface shutdown and no-shutdown (in seconds)
+  # Recommended: 5-10 seconds
+  reconnect_wait_seconds: 5
+  
+  # Maximum number of reconnect attempts before giving up
+  max_reconnect_attempts: 3
+
+# Logging Configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log file path
+  file: "logs/wan_monitor_ssh.log"
