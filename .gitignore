@@ -29,6 +29,7 @@ logs/
 
 # Configuration (contains sensitive credentials)
 config.yaml
+config_ssh.yaml
 
 # IDE
 .vscode/

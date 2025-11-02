@@ -120,15 +120,28 @@ class ER707SSH:
             WAN IP address or None if not found
         """
         try:
-            # Try 'show interface' command
-            output = self.execute_command(f"show interface {wan_interface}")
+            # Try multiple commands to find WAN IP
+            commands_to_try = [
+                f"show interface {wan_interface}",
+                "show ip interface brief",
+                "show interface brief",
+                "show wan",
+                "show running-config interface wan1",
+                "ifconfig wan1",
+                "ip addr show wan1",
+            ]
+            
+            output = None
+            for cmd in commands_to_try:
+                logging.debug(f"Trying command: {cmd}")
+                output = self.execute_command(cmd)
+                if output and len(output.strip()) > 10:  # Got some meaningful output
+                    logging.debug(f"Command '{cmd}' returned {len(output)} bytes")
+                    logging.debug(f"Output preview: {output[:300]}")
+                    break
             
             if not output:
-                # Try alternative command
-                output = self.execute_command("show ip interface brief")
-            
-            if not output:
-                logging.warning("Could not get interface information")
+                logging.warning("Could not get interface information from any command")
                 return None
             
             # Parse output for IP address
@@ -138,17 +151,20 @@ class ER707SSH:
                 r'IP Address:\s*(\d+\.\d+\.\d+\.\d+)',
                 r'ipv4:\s*(\d+\.\d+\.\d+\.\d+)',
                 r'address\s+(\d+\.\d+\.\d+\.\d+)',
+                r'ip:\s*(\d+\.\d+\.\d+\.\d+)',
+                r'(\d+\.\d+\.\d+\.\d+)/\d+',  # CIDR notation
             ]
             
             for pattern in ip_patterns:
                 match = re.search(pattern, output, re.IGNORECASE)
                 if match:
                     ip = match.group(1)
-                    if ip != "0.0.0.0":
+                    if ip != "0.0.0.0" and not ip.startswith("127."):
                         logging.debug(f"Found WAN IP: {ip}")
                         return ip
             
-            logging.debug(f"Could not parse IP from output: {output[:200]}")
+            logging.warning(f"Could not parse IP from output")
+            logging.info(f"Full output for debugging:\n{output}")
             return None
             
         except Exception as e:
