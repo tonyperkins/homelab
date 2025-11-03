@@ -1,0 +1,53 @@
+# ER707 WAN Monitor Configuration (SNMP Version)
+#
+# This configuration is for standalone ER707 devices with SNMP enabled
+
+# ER707 Device Settings
+er707:
+  # ER707 IP address or hostname
+  host: "192.168.1.1"
+  
+  # SNMP community string (must match ER707 configuration)
+  # Must be 10-64 characters, combination of letters, numbers, and special symbols
+  community_string: "monitoring2025!"
+  
+  # SNMP port (default: 161)
+  snmp_port: 161
+  
+  # WAN port ID to monitor
+  # 0 = WAN1, 1 = WAN2, etc.
+  wan_port_id: 0
+
+# Monitoring Behavior
+monitoring:
+  # How often to check WAN IP (in seconds)
+  # Recommended: 60-300 seconds (1-5 minutes)
+  check_interval_seconds: 180
+  
+  # Maximum number of reconnect attempts before giving up
+  max_reconnect_attempts: 3
+
+# Logging Configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log file path
+  file: "logs/wan_monitor_snmp.log"
+
+# Remediation Options
+# Note: SNMP typically provides read-only access
+# Interface restart may require alternative method
+remediation:
+  # Method: snmp, web_ui, smart_plug, manual
+  method: "manual"
+  
+  # If using web_ui method
+  web_ui:
+    username: "admin"
+    password: "password"
+  
+  # If using smart_plug method
+  smart_plug:
+    ip: "192.168.1.100"
+    type: "kasa"
